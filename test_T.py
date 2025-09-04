@@ -23,14 +23,14 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle
 test_loader = torch.utils.data.DataLoader(val_dataset, batch_size=64,
                                               shuffle=False, num_workers=16, pin_memory=True)
 
-model = resnet19(num_classes=100)
+model = vgg11(num_classes=100)
 device = 'cuda'
-model = torch.load('/home/hiran/Desktop/hiran/TET/cifar100_TET.pth', weights_only=False).to(device)
+model = torch.load('/home/hiran/Desktop/hiran/cifar100_TET_vgg11.pth', weights_only=False).to(device)
 
 # l = [29.65, 63.2, 68.97, 70.53, 69.85, 66.99]
 l = []
 # Values of T you want to test
-T_values = [2, 4, 8, 16, 32, 64]
+T_values = [2, 4, 6, 8, 16, 32]
 
 for T_val in T_values:
     model.T = T_val
@@ -55,7 +55,7 @@ for bar, acc in zip(bars, l):
         ha='center', va='bottom', fontsize=10
     )
 
-plt.ylim(70, 75)
+plt.ylim(28, 80)
 plt.xlabel("T (Number of Time Steps)")
 plt.ylabel("Test Accuracy (%)")
 plt.title("Accuracy vs T")

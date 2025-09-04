@@ -33,16 +33,16 @@ parser.add_argument('-j', '--workers', default=16, type=int)
 parser.add_argument('--epochs', default=300, type=int)
 parser.add_argument('--start_epoch', default=0, type=int)
 parser.add_argument('-b', '--batch_size', default=128, type=int)
-parser.add_argument('--lr', '--learning_rate', default=0.01, type=float, dest='lr')
+parser.add_argument('--lr', '--learning_rate', default=0.0001, type=float, dest='lr')
 parser.add_argument('--seed', default=1000, type=int)
-parser.add_argument('-T', default=2, type=int)
+parser.add_argument('-T', default=12, type=int)
 parser.add_argument('--means', default=1.0, type=float)
 parser.add_argument('--TET', default=True, type=bool)
 parser.add_argument('--lamb', default=1e-3, type=float)
 
 # Finetuning
-parser.add_argument('--fine_epochs', default=100, type=int)
-parser.add_argument('--fine_time', default=4, type=int)
+parser.add_argument('--fine_epochs', default=200, type=int)
+parser.add_argument('--fine_time', default=6, type=int)
 parser.add_argument('--fine_lr', default=0.0001, type=float)
 args = parser.parse_args()
 
@@ -115,7 +115,8 @@ if __name__ == '__main__':
     test_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size,
                                               shuffle=False, num_workers=args.workers, pin_memory=True)
 
-    model = resnet19(num_classes=100)
+    # model = resnet19(num_classes=100)
+    model = resnet18(num_classes=100)
     model.T = args.T
     total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_trainable_params:,}")
@@ -205,4 +206,4 @@ if __name__ == '__main__':
     logger.info(f"Final Best Test Acc: {best_test_acc:.3f} at epoch {best_epoch}")
 
     writer.close()
-    torch.save(model, "cifar100_TET.pth")
+    torch.save(model, "cifar100_TET_vgg11.pth")
