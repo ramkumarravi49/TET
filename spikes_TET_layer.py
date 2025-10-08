@@ -18,8 +18,6 @@ from functions import TET_loss, seed_all, get_logger
 from datetime import datetime
 
 def test_with_spikes(model, test_loader, device):
-
-
     model.eval()
     correct, total = 0, 0
 
@@ -27,18 +25,21 @@ def test_with_spikes(model, test_loader, device):
     spike_sum_over_samples = []
     layer_index = {}
     hooks = []
+    module_call_counter = {}
 
     current_batch_size = 0
     total_samples = 0
 
+    # Map module object -> its name (from named_modules)
+    module_to_name = {m: n for n, m in model.named_modules()}
+
     def hook_fn(module, inputs, out):
         nonlocal current_batch_size
 
-        spk = (out > 0).float()  # binary spikes
-        if spk.size(0) == current_batch_size:
-            spk = spk.transpose(0, 1)  # [T, N, ...] if needed
+        spk = (out > 0).float()
+        if spk.dim() >= 3 and spk.size(0) == current_batch_size:
+            spk = spk.transpose(0, 1)
 
-        # Flatten spatial dims
         feature_dims = tuple(range(2, spk.dim()))
         num_neurons = 1
         for d in feature_dims:
@@ -46,10 +47,18 @@ def test_with_spikes(model, test_loader, device):
 
         spikes_per_sample = spk.sum(dim=(0,) + feature_dims) / num_neurons
 
-        idx = layer_index.get(module)
+        # Count how many times this module is called in a forward
+        cnt = module_call_counter.get(module, 0) + 1
+        module_call_counter[module] = cnt
+
+        # Key uses real module name + call index
+        mod_name = module_to_name[module]
+        key = (mod_name, cnt)
+
+        idx = layer_index.get(key)
         if idx is None:
             idx = len(number_of_neurons)
-            layer_index[module] = idx
+            layer_index[key] = idx
             number_of_neurons.append(num_neurons)
             spike_sum_over_samples.append(spikes_per_sample.sum().item())
         else:
@@ -65,6 +74,9 @@ def test_with_spikes(model, test_loader, device):
             inputs, targets = inputs.to(device), targets.to(device)
             current_batch_size = inputs.size(0)
             total_samples += current_batch_size
+
+            # reset call counter each forward
+            module_call_counter.clear()
 
             outputs = model(inputs)
 
@@ -82,11 +94,22 @@ def test_with_spikes(model, test_loader, device):
 
     number_of_spikes = [s / total_samples for s in spike_sum_over_samples]
 
+    # Build readable layer names
+    inv_map = {v: k for k, v in layer_index.items()}
+    layer_names = []
+    for i in range(len(number_of_spikes)):
+        mod_name, call_idx = inv_map[i]
+        if call_idx > 1:
+            layer_names.append(f"{mod_name}:{call_idx}")
+        else:
+            layer_names.append(mod_name)
+
     print("number_of_neurons:", number_of_neurons)
     print("number_of_spikes:", number_of_spikes)
+    print("layer_names:", layer_names)
 
     final_acc = 100.0 * correct / total
-    return final_acc, number_of_neurons, number_of_spikes
+    return final_acc, number_of_neurons, number_of_spikes, layer_names
 
 
 
@@ -116,7 +139,7 @@ model = model.to(device)
 
 
 
-model.T = 8 
+model.T = 16 
 #parallel_model = torch.nn.DataParallel(model)
 #parallel_model.to(device)
 parallel_model = model.to(device)
@@ -132,19 +155,20 @@ layers = get_all_spike_layers(model)
 for i, name in enumerate(layers):
     print(f"[{i}] {name}")
 print(f"Total LIFSpike layers: {len(layers)}")
-facc,number_of_neurons, number_of_spikes = test_with_spikes(parallel_model, test_loader, device)
+facc,number_of_neurons, number_of_spikes, layer_names = test_with_spikes(parallel_model, test_loader, device)
 
 print(facc)
-plt.figure(figsize=(8, 5))
+plt.figure(figsize=(12, 5))
 plt.bar(range(len(number_of_spikes)), number_of_spikes, color='skyblue', edgecolor='black')
+plt.xticks(range(len(number_of_spikes)), layer_names, rotation=45, ha="right", fontsize=8)
 
-plt.xlabel("Layer Index", fontsize=12)
+plt.xlabel("Layer Index( module call index)", fontsize=12)
 plt.ylabel("Average Number of Spikes", fontsize=12)
-plt.title("Spike Counts per Layer", fontsize=14)
+plt.title("Spike Counts per (module call) Layer", fontsize=14)
 
 
 plt.tight_layout()
-plt.savefig("TET_spike_histogram_lr1e2_cutout_T8.png", dpi=300)
+plt.savefig("TET_spike_histogram_lr1e2_cutout_T16_calls.png", dpi=300)
 plt.close()
 
 

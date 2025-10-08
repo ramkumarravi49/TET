@@ -8,7 +8,8 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.optim
 from torch.utils.tensorboard import SummaryWriter
-import pynvml
+#import pynvml
+from tqdm import tqdm
 
 from models.VGG_models import *
 from models.resnet_models import *
@@ -24,7 +25,9 @@ def get_gpu_utilization():
 
 # ------------------------------------------------- #
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Training
@@ -33,16 +36,16 @@ parser.add_argument('-j', '--workers', default=16, type=int)
 parser.add_argument('--epochs', default=300, type=int)
 parser.add_argument('--start_epoch', default=0, type=int)
 parser.add_argument('-b', '--batch_size', default=128, type=int)
-parser.add_argument('--lr', '--learning_rate', default=0.0001, type=float, dest='lr')
+parser.add_argument('--lr', '--learning_rate', default=0.01, type=float, dest='lr')
 parser.add_argument('--seed', default=1000, type=int)
-parser.add_argument('-T', default=12, type=int)
+parser.add_argument('-T', default=2, type=int)
 parser.add_argument('--means', default=1.0, type=float)
 parser.add_argument('--TET', default=True, type=bool)
 parser.add_argument('--lamb', default=1e-3, type=float)
 
 # Finetuning
-parser.add_argument('--fine_epochs', default=200, type=int)
-parser.add_argument('--fine_time', default=6, type=int)
+parser.add_argument('--fine_epochs', default=50, type=int)
+parser.add_argument('--fine_time', default=4, type=int)
 parser.add_argument('--fine_lr', default=0.0001, type=float)
 args = parser.parse_args()
 
@@ -52,7 +55,8 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
     correct = 0
     model.train()
 
-    for i, (images, labels) in enumerate(train_loader):
+    loop = tqdm(enumerate(train_loader), total=len(train_loader), leave=False)
+    for i, (images, labels) in loop:
         optimizer.zero_grad()
         labels = labels.to(device)
         images = images.to(device)
@@ -72,8 +76,11 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
         _, predicted = mean_out.cpu().max(1)
         correct += predicted.eq(labels.cpu()).sum().item()
 
-    return running_loss, 100 * correct / total
+        # 👇 Update tqdm bar
+        loop.set_description(f"Epoch [{epoch+1}]")
+        loop.set_postfix(loss=loss.item(), acc=100*correct/total)
 
+    return running_loss, 100 * correct / total
 
 @torch.no_grad()
 def test(model, test_loader, device):
@@ -109,18 +116,20 @@ if __name__ == '__main__':
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=f"./runs/experiment_{run_id}")
 
-    train_dataset, val_dataset = data_loaders.build_cifar(cutout=True, use_cifar10=False, download=False)
+    train_dataset, val_dataset = data_loaders.build_cifar(cutout=True, use_cifar10=True, download=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                                num_workers=args.workers, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size,
                                               shuffle=False, num_workers=args.workers, pin_memory=True)
 
-    # model = resnet19(num_classes=100)
-    model = resnet18(num_classes=100)
+    model = resnet19(num_classes=10)
+   # model = resnet18(num_classes=100)
     model.T = args.T
     total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_trainable_params:,}")
-    parallel_model = torch.nn.DataParallel(model).to(device)
+    
+    #parallel_model = torch.nn.DataParallel(model).to(device)
+    parallel_model = model.to(device)
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -130,8 +139,21 @@ if __name__ == '__main__':
     best_test_acc = 0
     best_epoch = 0
 
-    logger = get_logger('exp.log')
+    logger = get_logger('TET_19_Sep_Train.log')
+    logger.info("========== Training Configuration ==========")
+    for arg, val in vars(args).items():
+        logger.info(f"{arg}: {val}")
+    logger.info("============================================")
+
     logger.info('start training!')
+
+    # Log all hyperparameters into TensorBoard
+    args_text = "\n".join([f"{arg}: {val}" for arg, val in vars(args).items()])
+    writer.add_text("Hyperparameters", args_text)
+
+    save_every = 50   # Save every N epochs
+    checkpoint_dir = "./checkpoints_lr_1e2_25sep"
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     for epoch in range(args.epochs):
         epoch_start = time.time()
@@ -150,13 +172,36 @@ if __name__ == '__main__':
         if test_acc > best_test_acc:
             best_test_acc = test_acc
             best_epoch = epoch + 1
+            # Save best model checkpoint
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_test_acc': best_test_acc
+            }, os.path.join(checkpoint_dir, "best_model.pth"))
+            logger.info(f"Saved new best model at epoch {epoch+1} (Test acc={test_acc:.3f})")
+
+        # Save every N epochs
+        if (epoch + 1) % save_every == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_test_acc': best_test_acc
+            }, os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth"))
+            logger.info(f"Saved checkpoint at epoch {epoch+1}")
 
         # Get peak GPU memory usage for this epoch in GB
         peak_mem_gb = torch.cuda.max_memory_reserved() / (1024**3)
-
         epoch_time = time.time() - epoch_start
+        current_lr = optimizer.param_groups[0]['lr']
 
-        logger.info(f"Epoch:[{epoch}/{args.epochs}] Train loss={train_loss:.5f} Train acc={train_acc:.3f} "
+
+        logger.info(f"Epoch:[{epoch}/{args.epochs}] "
+                    f"LR={current_lr:.6f} "
+                    f"Train loss={train_loss:.5f} Train acc={train_acc:.3f} "
                     f"Test acc={test_acc:.3f} Avg Spikes={avg_spikes:.3f} "
                     f"GPU Peak Mem={peak_mem_gb:.2f}GB Time={epoch_time:.2f}s")
 
@@ -166,6 +211,8 @@ if __name__ == '__main__':
         writer.add_scalar("Spikes/Avg_per_inference", avg_spikes, epoch)
         writer.add_scalar("GPU Memory/Peak (GB)", peak_mem_gb, epoch)
         writer.add_scalar("Time/Epoch_time_sec", epoch_time, epoch)
+        writer.add_scalar("LR", current_lr, epoch) 
+
 
     # -------------------- Fine-tuning -------------------- #
     logger.info("Starting fine-tuning...")
@@ -206,4 +253,4 @@ if __name__ == '__main__':
     logger.info(f"Final Best Test Acc: {best_test_acc:.3f} at epoch {best_epoch}")
 
     writer.close()
-    torch.save(model, "cifar100_TET_vgg11.pth")
+    torch.save(model, "cifar10_TET_resnet19_25_Sep.pth")
