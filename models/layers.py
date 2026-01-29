@@ -1,3 +1,4 @@
+#models/layers.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,15 +86,33 @@ class ZIF(torch.autograd.Function):
 
 
 class LIFSpike(nn.Module):
-    def __init__(self, thresh=1.0, tau=0.5, gama=1.0):
+    def __init__(self, thresh=1.0, tau=0.5, gama=1.0): # self, thresh=1.0, tau=0.5, gama=1.0
         super(LIFSpike, self).__init__()
         self.act = ZIF.apply
         # self.k = 10
         # self.act = F.sigmoid
-        self.thresh = thresh
+        # self.thresh = thresh
+         # Make threshold learnable (Rajasekar experiment)
+        self.thresh = nn.Parameter(torch.tensor(float(thresh)))
+        
         self.tau = tau
         self.gama = gama
 
+    # def forward(self, x):
+    #     mem = 0
+    #     spike_pot = []
+    #     T = x.shape[1]
+    #     for t in range(T):
+    #         mem = mem * self.tau + x[:, t, ...]
+    #         spike = self.act(mem - self.thresh, self.gama)
+    #         # spike = self.act((mem - self.thresh)*self.k)
+    #         mem = (1 - spike) * mem
+    #         spike_pot.append(spike)
+    #     return torch.stack(spike_pot, dim=1)
+    
+    ##########################################
+    ## Modifed forward fn for physical sr
+    ##########################################
     def forward(self, x):
         mem = 0
         spike_pot = []
@@ -101,10 +120,12 @@ class LIFSpike(nn.Module):
         for t in range(T):
             mem = mem * self.tau + x[:, t, ...]
             spike = self.act(mem - self.thresh, self.gama)
-            # spike = self.act((mem - self.thresh)*self.k)
             mem = (1 - spike) * mem
             spike_pot.append(spike)
-        return torch.stack(spike_pot, dim=1)
+        spikes = torch.stack(spike_pot, dim=1)
+        self.forward_spike_trace = spikes.detach()  # store for physical SR
+        return spikes
+
 
 
 def add_dimention(x, T):

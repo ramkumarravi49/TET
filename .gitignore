@@ -37,7 +37,7 @@ __pycache__/
 # -------------------------------
 # Large Datasets
 # -------------------------------
-*.csv
+
 *.tsv
 *.parquet
 *.feather
@@ -62,8 +62,7 @@ __pycache__/
 # Images / Videos (optional)
 # -------------------------------
 
-*.jpg
-*.jpeg
+
 *.tif
 *.tiff
 *.bmp

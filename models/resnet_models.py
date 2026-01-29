@@ -1,3 +1,4 @@
+#models/resenet_models.py
 import random
 from models.layers import *
 
@@ -270,10 +271,24 @@ def resnet19(pretrained=False, progress=True, **kwargs):
     return _resnet('resnet18', BasicBlock, [3, 3, 2], pretrained, progress,
                    **kwargs)
 
+def resnet20(pretrained=False, progress=True, **kwargs):
+    """
+    ResNet-20 for CIFAR-like datasets (3x32x32).
+    Same architecture used in TET and QCFS papers.
+    """
+    return _resnet('resnet20', BasicBlock, [3, 3, 3], pretrained, progress, **kwargs)
 
+
+
+# if __name__ == '__main__':
+#     model = resnet19(num_classes=10)
+#     model.T = 3
+#     x = torch.rand(2,3,32,32)
+#     y = model(x)
+#     print(y.shape)
 if __name__ == '__main__':
-    model = resnet19(num_classes=10)
-    model.T = 3
-    x = torch.rand(2,3,32,32)
+    model = resnet20(num_classes=10)
+    model.T = 4
+    x = torch.rand(2, 3, 32, 32)
     y = model(x)
-    print(y.shape)
+    print("Output shape:", y.shape)
