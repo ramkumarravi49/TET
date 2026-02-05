@@ -19,15 +19,6 @@ from functions import TET_loss, seed_all, get_logger
 from datetime import datetime
 
 
-# ---------------- GPU Monitoring ---------------- #
-def get_gpu_utilization():
-    mem_bytes = torch.cuda.memory_allocated()
-    return torch.cuda.max_memory_allocated() / (1024**3), mem_bytes / (1024**3)
-# ------------------------------------------------- #
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 # -------------------- ARGUMENTS -------------------- #
 parser = argparse.ArgumentParser(description='PyTorch Temporal Efficient Training')
@@ -48,8 +39,28 @@ parser.add_argument('--fine_epochs', default=50, type=int)
 parser.add_argument('--fine_time', default=4, type=int)
 parser.add_argument('--fine_lr', default=0.0001, type=float)
 
+parser.add_argument('--run_name', type=str, required=True,
+                    help='Experiment run name (used for logs, TB, checkpoints)')
+parser.add_argument('--gpu', type=str, default="0",
+                    help='CUDA_VISIBLE_DEVICES value (e.g. "0", "1", "0,1")')
+
 args = parser.parse_args()
 # ----------------------------------------------------- #
+
+# ---------------- GPU Monitoring ---------------- #
+def get_gpu_utilization():
+    mem_bytes = torch.cuda.memory_allocated()
+    return torch.cuda.max_memory_allocated() / (1024**3), mem_bytes / (1024**3)
+# ------------------------------------------------- #
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print(f"Using GPU(s): {args.gpu}")
+print(f"Device resolved as: {device}")
 
 
 # ---------------- TRAIN FUNCTION ---------------- #
@@ -97,33 +108,112 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
         #     loss = loss + args.lambda_spike * spike_loss
         # # =================================================================
 
+        # # ================= PHYSICAL SPIKE REGULARIZATION =================
+        # if args.lambda_spike > 0:
+        #     #print(f"[DEBUG] λ_spike being applied: {args.lambda_spike}")
+        #     spike_counts = []
+        #     for module in model.modules():
+        #         if isinstance(module, LIFSpike):
+        #             # LIF output shape: [B, T, ...]
+        #             spikes = module.forward_spike_trace if hasattr(module, "forward_spike_trace") else None
+        #             if spikes is not None:
+        #                 # Sum over neurons, average over batch → [T]
+        #                 spikes = spikes.detach()  # no grad needed
+        #                 count_per_t = spikes.flatten(2).sum(dim=2).mean(dim=0)
+        #                 spike_counts.append(count_per_t)
+
+        #     if len(spike_counts) > 0:
+        #         total_spikes_per_t = torch.stack(spike_counts).sum(dim=0)  # [T]
+        #         T = total_spikes_per_t.numel()
+
+        #         time_weights = torch.linspace(1.0 / T, 1.0, T, device=outputs.device)
+        #         physical_spike_loss = (time_weights * total_spikes_per_t).sum()
+        #         loss = loss + args.lambda_spike * physical_spike_loss
+        # # =================================================================
         # ================= PHYSICAL SPIKE REGULARIZATION =================
+        # Initialize these in case λ_spike = 0
+        base_loss_value = loss.item()
+        raw_spike_loss = 0.0
+        scaled_spike_loss = 0.0
+
         if args.lambda_spike > 0:
+            #print(f"[DEBUG] λ_spike being applied: {args.lambda_spike}")
             spike_counts = []
             for module in model.modules():
                 if isinstance(module, LIFSpike):
-                    # LIF output shape: [B, T, ...]
-                    spikes = module.forward_spike_trace if hasattr(module, "forward_spike_trace") else None
+                    spikes = getattr(module, "forward_spike_trace", None)
                     if spikes is not None:
-                        # Sum over neurons, average over batch → [T]
-                        spikes = spikes.detach()  # no grad needed
+                        #spikes = spikes.detach()  # no grad
                         count_per_t = spikes.flatten(2).sum(dim=2).mean(dim=0)
                         spike_counts.append(count_per_t)
 
-            if len(spike_counts) > 0:
+            if spike_counts:
                 total_spikes_per_t = torch.stack(spike_counts).sum(dim=0)  # [T]
                 T = total_spikes_per_t.numel()
-
                 time_weights = torch.linspace(1.0 / T, 1.0, T, device=outputs.device)
                 physical_spike_loss = (time_weights * total_spikes_per_t).sum()
-                loss = loss + args.lambda_spike * physical_spike_loss
+
+                scaled_loss = args.lambda_spike * physical_spike_loss
+                #print(f"[DEBUG] SpikeLoss (raw): {physical_spike_loss.item():.4f} | "f"λ × loss: {scaled_loss.item():.6f}")
+                loss = loss + scaled_loss
+                # ================= DEBUG: Compare loss magnitudes =================
+                base_loss_value = loss.item() - scaled_loss.item()  # isolate base (TET/CE) loss
+                raw_spike_loss = physical_spike_loss.item()
+                scaled_spike_loss = scaled_loss.item()
+
+                print(f"[DEBUG] Base Loss (TET or CE): {base_loss_value:.4f}")
+                print(f"[DEBUG] Physical Spike Loss (raw): {raw_spike_loss:.4f}")
+                print(f"[DEBUG] Physical Spike Loss (scaled): {scaled_spike_loss:.6f}")
+                # ================================================================
+
         # =================================================================
+
 
 
 
 
         running_loss += loss.item()
         loss.mean().backward()
+
+        # # ============ DEBUG: Check threshold gradients ============
+       
+        global_step = epoch * len(train_loader) + i
+        writer.add_scalar("Loss/Base_TET_or_CE", base_loss_value, global_step)
+        writer.add_scalar("Loss/SpikeRaw", raw_spike_loss, global_step)
+        writer.add_scalar("Loss/SpikeScaled", scaled_spike_loss, global_step)
+        writer.add_scalar("Loss/Total", loss.item(), global_step)
+
+        if i % 30 == 0:  # log every 40 minibatches
+            logger.info(
+                f"[MiniBatch {i:04d}] "
+                f"BaseLoss={base_loss_value:.4f} "
+                f"SpikeRaw={raw_spike_loss:.4f} "
+                f"SpikeScaled={scaled_spike_loss:.6f} "
+                f"TotalLoss={loss.item():.4f}"
+            )
+
+
+
+        
+        # for name, module in model.named_modules():
+        #     if isinstance(module, LIFSpike):
+        #         if hasattr(module, 'thresh') and module.thresh.grad is not None:
+        #             print(f"[DEBUG] {name}.thresh grad norm: {module.thresh.grad.norm().item():.6f}")
+        #         elif hasattr(module, 'thresh'):
+        #             print(f"[DEBUG] {name}.thresh grad is None")
+        # # ===========================================================
+
+        # ##########################################
+        # # DEBUG: Track gradient norm
+        # grad_norm = 0.0
+        # for p in model.parameters():
+        #     if p.grad is not None:
+        #         grad_norm += p.grad.norm().item() ** 2
+        # grad_norm = grad_norm ** 0.5
+        # print(f"[DEBUG] Gradient Norm: {grad_norm:.6f}")
+        # # DEBUG: Track gradient norm
+        # ##########################################
+
         optimizer.step()
 
         total += labels.size(0)
@@ -167,7 +257,9 @@ if __name__ == '__main__':
     seed_all(args.seed)
 
     # <<< MANUALLY EDIT THIS FOR EVERY RUN
-    run_id = "LT_SR_5e3_resnet19_T_8"
+    # run_id = "TEST"
+    run_id = run_id = args.run_name
+
 
     # TensorBoard + Logs
     writer = SummaryWriter(log_dir=os.path.join("Logs", "runs", run_id))
@@ -219,7 +311,7 @@ if __name__ == '__main__':
     checkpoint_dir = os.path.join("CHECKPOINTS", run_id)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    save_every = 250
+    save_every = 100
 
     # ------------------- TRAINING LOOP ------------------- #
     for epoch in range(args.epochs):

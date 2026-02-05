@@ -18,6 +18,48 @@ from functions import TET_loss, seed_all, get_logger
 from datetime import datetime
 
 # ----------------------------
+# Runtime arguments
+# ----------------------------
+parser = argparse.ArgumentParser(description="Spike DIT layer-wise inference")
+
+parser.add_argument(
+    "--checkpoint",
+    type=str,
+    required=True,
+    help="Path to trained model checkpoint (.pth)"
+)
+
+parser.add_argument(
+    "--T",
+    type=int,
+    required=True,
+    help="Temporal length T used during inference"
+)
+
+parser.add_argument(
+    "--batch_size",
+    type=int,
+    default=64,
+    help="Batch size for inference"
+)
+
+parser.add_argument(
+    "--workers",
+    type=int,
+    default=16,
+    help="Number of DataLoader workers"
+)
+
+parser.add_argument(
+    "--device",
+    type=str,
+    default="cuda",
+    help="Device to run inference on"
+)
+
+args = parser.parse_args()
+
+# ----------------------------
 # Function to standardize layer names (QCFS-style)
 # ----------------------------
 def standardize_layer_name(name: str):
@@ -33,103 +75,7 @@ def standardize_layer_name(name: str):
         parts = [p.replace(k, v) for p in parts]
     return ".".join(parts)
 
-# ----------------------------
-# Test + spike collection
-# ----------------------------
-# def test_with_spikes(model, test_loader, device):
-#     model.eval()
-#     correct, total = 0, 0
 
-#     number_of_neurons = []
-#     spike_sum_over_samples = []
-#     layer_index = {}
-#     hooks = []
-#     module_call_counter = {}
-#     current_batch_size = 0
-#     total_samples = 0
-#     module_to_name = {m: n for n, m in model.named_modules()}
-
-#     raw_spike_total = 0
-
-
-#     def hook_fn(module, inputs, out):
-#         nonlocal current_batch_size
-#         spk = (out > 0).float()
-#         raw_spike_total += spk.sum().item()
-#         if spk.dim() >= 3 and spk.size(0) == current_batch_size:
-#             spk = spk.transpose(0, 1)
-
-#         feature_dims = tuple(range(2, spk.dim()))
-#         num_neurons = 1
-#         for d in feature_dims:
-#             num_neurons *= spk.size(d)
-
-#         spikes_per_sample = spk.sum(dim=(0,) + feature_dims) / num_neurons
-#         cnt = module_call_counter.get(module, 0) + 1
-#         module_call_counter[module] = cnt
-#         mod_name = module_to_name[module]
-#         key = (mod_name, cnt)
-
-#         idx = layer_index.get(key)
-#         if idx is None:
-#             idx = len(number_of_neurons)
-#             layer_index[key] = idx
-#             number_of_neurons.append(num_neurons)
-#             spike_sum_over_samples.append(spikes_per_sample.sum().item())
-#         else:
-#             spike_sum_over_samples[idx] += spikes_per_sample.sum().item()
-
-#     # Register hooks
-#     for m in model.modules():
-#         if m.__class__.__name__ == "LIFSpike":
-#             hooks.append(m.register_forward_hook(hook_fn))
-
-#     with torch.no_grad():
-#         for inputs, targets in test_loader:
-#             inputs, targets = inputs.to(device), targets.to(device)
-#             current_batch_size = inputs.size(0)
-#             total_samples += current_batch_size
-#             module_call_counter.clear()
-
-#             outputs = model(inputs)
-#             if outputs.dim() == 3:
-#                 mean_out = outputs.mean(1)
-#             else:
-#                 mean_out = outputs
-#             _, predicted = mean_out.max(1)
-#             total += targets.size(0)
-#             correct += predicted.eq(targets).sum().item()
-
-#     for h in hooks:
-#         h.remove()
-
-#     number_of_spikes = [s / total_samples for s in spike_sum_over_samples]
-#     inv_map = {v: k for k, v in layer_index.items()}
-
-#     layer_names = []
-#     for i in range(len(number_of_spikes)):
-#         mod_name, call_idx = inv_map[i]
-#         if call_idx > 1:
-#             layer_names.append(f"{mod_name}:{call_idx}")
-#         else:
-#             layer_names.append(mod_name)
-
-#     # Standardize names
-#     layer_names = [standardize_layer_name(name) for name in layer_names]
-#     final_acc = 100.0 * correct / total
-
-#     # ---- Print output (to keep same as before) ----
-#     print("number_of_neurons:", number_of_neurons)
-#     print("number_of_spikes:", number_of_spikes)
-#     print("layer_names:", layer_names)
-#     print(f"Accuracy: {final_acc:.2f}%")
-#     network_avg_spikes = sum(number_of_spikes) / len(number_of_spikes)
-#     print("Network average spikes:", network_avg_spikes)
-#     avg_raw_spikes_per_image = raw_spike_total / total_samples
-#     print("Average TOTAL spikes per image (raw count):", avg_raw_spikes_per_image)
-
-
-#     return final_acc, number_of_neurons, number_of_spikes, layer_names
 
 def test_with_spikes(model, test_loader, device):
     model.eval()
@@ -236,19 +182,45 @@ def test_with_spikes(model, test_loader, device):
 # ----------------------------
 # Main Execution
 # ----------------------------
-train_dataset, val_dataset = data_loaders.build_cifar(cutout=True, use_cifar10=True, download=True)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=16, pin_memory=True)
-test_loader = torch.utils.data.DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True)
+# train_dataset, val_dataset = data_loaders.build_cifar(cutout=True, use_cifar10=True, download=True)
+# train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=16, pin_memory=True)
+# test_loader = torch.utils.data.DataLoader(val_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True)
+# ----------------------------
+# Data loading
+# ----------------------------
+train_dataset, val_dataset = data_loaders.build_cifar(
+    cutout=True,
+    use_cifar10=True,
+    download=True
+)
+
+train_loader = torch.utils.data.DataLoader(
+    train_dataset,
+    batch_size=args.batch_size,
+    shuffle=True,
+    num_workers=args.workers,
+    pin_memory=True
+)
+
+test_loader = torch.utils.data.DataLoader(
+    val_dataset,
+    batch_size=args.batch_size,
+    shuffle=False,
+    num_workers=args.workers,
+    pin_memory=True
+)
 
 device = 'cuda'
 model = resnet19(num_classes=10)
-checkpoint = torch.load('/data/cs24m037/TET_LT/CHECKPOINTS/LT_SR_1e3_resnet19/best_model.pth', map_location=device)
+checkpoint = torch.load(args.checkpoint, map_location=device)
+#checkpoint = torch.load('/data/cs24m037/TET_LT/CHECKPOINTS/LT_SR_PHY_1e4_resnet19_T8/best_model.pth', map_location=device)
 # checkpoint = torch.load('/data/cs24m037/TET/CHECKPOINTS/checkpoints_resent18_qcfs_agument_lr1e2/best_model.pth', map_location=device)
 #/data/cs24m037/TET_with_stats/checkpoints_vgg16_tet_lr1e2/best_model.pth
 #/data/cs24m037/TET_LT/CHECKPOINTS/LT_base/best_model.pth
 model.load_state_dict(checkpoint['model_state_dict'])
 model = model.to(device)
-model.T = 8
+#model.T = 8
+model.T = args.T
 parallel_model = model.to(device)
 
 # Run test
@@ -271,3 +243,114 @@ for i, v in enumerate(number_of_spikes):
 plt.tight_layout()
 plt.savefig("TET_LT_SR_1e3_resnet18_histogram.png", dpi=300)
 plt.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ----------------------------
+# Test + spike collection
+# ----------------------------
+# def test_with_spikes(model, test_loader, device):
+#     model.eval()
+#     correct, total = 0, 0
+
+#     number_of_neurons = []
+#     spike_sum_over_samples = []
+#     layer_index = {}
+#     hooks = []
+#     module_call_counter = {}
+#     current_batch_size = 0
+#     total_samples = 0
+#     module_to_name = {m: n for n, m in model.named_modules()}
+
+#     raw_spike_total = 0
+
+
+#     def hook_fn(module, inputs, out):
+#         nonlocal current_batch_size
+#         spk = (out > 0).float()
+#         raw_spike_total += spk.sum().item()
+#         if spk.dim() >= 3 and spk.size(0) == current_batch_size:
+#             spk = spk.transpose(0, 1)
+
+#         feature_dims = tuple(range(2, spk.dim()))
+#         num_neurons = 1
+#         for d in feature_dims:
+#             num_neurons *= spk.size(d)
+
+#         spikes_per_sample = spk.sum(dim=(0,) + feature_dims) / num_neurons
+#         cnt = module_call_counter.get(module, 0) + 1
+#         module_call_counter[module] = cnt
+#         mod_name = module_to_name[module]
+#         key = (mod_name, cnt)
+
+#         idx = layer_index.get(key)
+#         if idx is None:
+#             idx = len(number_of_neurons)
+#             layer_index[key] = idx
+#             number_of_neurons.append(num_neurons)
+#             spike_sum_over_samples.append(spikes_per_sample.sum().item())
+#         else:
+#             spike_sum_over_samples[idx] += spikes_per_sample.sum().item()
+
+#     # Register hooks
+#     for m in model.modules():
+#         if m.__class__.__name__ == "LIFSpike":
+#             hooks.append(m.register_forward_hook(hook_fn))
+
+#     with torch.no_grad():
+#         for inputs, targets in test_loader:
+#             inputs, targets = inputs.to(device), targets.to(device)
+#             current_batch_size = inputs.size(0)
+#             total_samples += current_batch_size
+#             module_call_counter.clear()
+
+#             outputs = model(inputs)
+#             if outputs.dim() == 3:
+#                 mean_out = outputs.mean(1)
+#             else:
+#                 mean_out = outputs
+#             _, predicted = mean_out.max(1)
+#             total += targets.size(0)
+#             correct += predicted.eq(targets).sum().item()
+
+#     for h in hooks:
+#         h.remove()
+
+#     number_of_spikes = [s / total_samples for s in spike_sum_over_samples]
+#     inv_map = {v: k for k, v in layer_index.items()}
+
+#     layer_names = []
+#     for i in range(len(number_of_spikes)):
+#         mod_name, call_idx = inv_map[i]
+#         if call_idx > 1:
+#             layer_names.append(f"{mod_name}:{call_idx}")
+#         else:
+#             layer_names.append(mod_name)
+
+#     # Standardize names
+#     layer_names = [standardize_layer_name(name) for name in layer_names]
+#     final_acc = 100.0 * correct / total
+
+#     # ---- Print output (to keep same as before) ----
+#     print("number_of_neurons:", number_of_neurons)
+#     print("number_of_spikes:", number_of_spikes)
+#     print("layer_names:", layer_names)
+#     print(f"Accuracy: {final_acc:.2f}%")
+#     network_avg_spikes = sum(number_of_spikes) / len(number_of_spikes)
+#     print("Network average spikes:", network_avg_spikes)
+#     avg_raw_spikes_per_image = raw_spike_total / total_samples
+#     print("Average TOTAL spikes per image (raw count):", avg_raw_spikes_per_image)
+
+
+#     return final_acc, number_of_neurons, number_of_spikes, layer_names

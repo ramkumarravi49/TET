@@ -123,7 +123,7 @@ class LIFSpike(nn.Module):
             mem = (1 - spike) * mem
             spike_pot.append(spike)
         spikes = torch.stack(spike_pot, dim=1)
-        self.forward_spike_trace = spikes.detach()  # store for physical SR
+        self.forward_spike_trace = spikes  # store for physical SR
         return spikes
 
 
