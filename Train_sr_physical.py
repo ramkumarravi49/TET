@@ -161,9 +161,9 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
                 raw_spike_loss = physical_spike_loss.item()
                 scaled_spike_loss = scaled_loss.item()
 
-                print(f"[DEBUG] Base Loss (TET or CE): {base_loss_value:.4f}")
-                print(f"[DEBUG] Physical Spike Loss (raw): {raw_spike_loss:.4f}")
-                print(f"[DEBUG] Physical Spike Loss (scaled): {scaled_spike_loss:.6f}")
+                # print(f"[DEBUG] Base Loss (TET or CE): {base_loss_value:.4f}")
+                # print(f"[DEBUG] Physical Spike Loss (raw): {raw_spike_loss:.4f}")
+                # print(f"[DEBUG] Physical Spike Loss (scaled): {scaled_spike_loss:.6f}")
                 # ================================================================
 
         # =================================================================
@@ -183,7 +183,7 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
         writer.add_scalar("Loss/SpikeScaled", scaled_spike_loss, global_step)
         writer.add_scalar("Loss/Total", loss.item(), global_step)
 
-        if i % 30 == 0:  # log every 40 minibatches
+        if i % 60 == 0:  # log every 40 minibatches
             logger.info(
                 f"[MiniBatch {i:04d}] "
                 f"BaseLoss={base_loss_value:.4f} "
@@ -227,29 +227,184 @@ def train(model, device, train_loader, criterion, optimizer, epoch, args):
 
 
 # ---------------- TEST FUNCTION ---------------- #
+# @torch.no_grad()
+# def test(model, test_loader, device):
+#     correct = 0
+#     total = 0
+#     total_spikes = 0
+#     num_inferences = 0
+
+#     model.eval()
+
+#     for batch_idx, (inputs, targets) in enumerate(test_loader):
+#         inputs = inputs.to(device)
+#         outputs = model(inputs)
+#         mean_out = outputs.mean(1)
+
+#         batch_spikes = (outputs > 0).sum().item()
+#         total_spikes += batch_spikes
+#         num_inferences += inputs.size(0)
+
+#         _, predicted = mean_out.cpu().max(1)
+#         total += targets.size(0)
+#         correct += predicted.eq(targets).sum().item()
+
+#     return 100 * correct / total, total_spikes / num_inferences
+
+# @torch.no_grad()
+# def test(model, test_loader, device):
+#     correct = 0
+#     total = 0
+#     proxy_total_spikes = 0
+#     lif_total_spikes = 0
+#     total_samples = 0
+
+#     model.eval()
+
+#     number_of_neurons = []
+#     spike_sum_over_samples = []
+#     layer_index = {}
+#     module_call_counter = {}
+#     module_to_name = {m: n for n, m in model.named_modules()}
+
+#     def spike_hook(module, inputs, out):
+#         nonlocal lif_total_spikes, total_samples
+
+#         spk = (out > 0).float()
+#         lif_total_spikes += spk.sum().item()
+
+#         if spk.dim() >= 3 and spk.size(0) == inputs[0].size(0):
+#             spk = spk.transpose(0, 1)
+
+#         feature_dims = tuple(range(2, spk.dim()))
+#         num_neurons = 1
+#         for d in feature_dims:
+#             num_neurons *= spk.size(d)
+
+#         spikes_per_sample = spk.sum(dim=(0,) + feature_dims) / num_neurons
+
+#         cnt = module_call_counter.get(module, 0) + 1
+#         module_call_counter[module] = cnt
+#         mod_name = module_to_name[module]
+#         key = (mod_name, cnt)
+
+#         idx = layer_index.get(key)
+#         if idx is None:
+#             idx = len(number_of_neurons)
+#             layer_index[key] = idx
+#             number_of_neurons.append(num_neurons)
+#             spike_sum_over_samples.append(spikes_per_sample.sum().item())
+#         else:
+#             spike_sum_over_samples[idx] += spikes_per_sample.sum().item()
+
+#     hooks = []
+#     for m in model.modules():
+#         if m.__class__.__name__ == "LIFSpike":
+#             hooks.append(m.register_forward_hook(spike_hook))
+
+#     for batch_idx, (inputs, targets) in enumerate(test_loader):
+#         inputs = inputs.to(device)
+#         targets = targets.to(device)
+#         outputs = model(inputs)
+#         mean_out = outputs.mean(1)
+
+#         batch_spikes = (outputs > 0).sum().item()
+#         proxy_total_spikes += batch_spikes
+#         total_samples += inputs.size(0)
+
+#         _, predicted = mean_out.cpu().max(1)
+#         total += targets.size(0)
+#         correct += predicted.eq(targets.cpu()).sum().item()
+
+#     for h in hooks:
+#         h.remove()
+
+#     acc = 100 * correct / total
+#     proxy_avg_spikes = proxy_total_spikes / total_samples
+#     #network_avg_spikes = sum(spike_sum_over_samples) / (len(spike_sum_over_samples) * total_samples)
+#     number_of_spikes = [s / total_samples for s in spike_sum_over_samples]
+#     network_avg_spikes = sum(number_of_spikes) / len(number_of_spikes)
+
+#     return acc, proxy_avg_spikes, network_avg_spikes, lif_total_spikes , total_samples
+
 @torch.no_grad()
 def test(model, test_loader, device):
     correct = 0
     total = 0
-    total_spikes = 0
-    num_inferences = 0
+    proxy_total_spikes = 0
+    lif_total_spikes = 0
+    total_samples = 0
+    current_batch_size = 0
 
     model.eval()
 
+    number_of_neurons = []
+    spike_sum_over_samples = []
+    layer_index = {}
+    module_call_counter = {}
+    module_to_name = {m: n for n, m in model.named_modules()}
+
+    def spike_hook(module, inputs, out):
+        nonlocal lif_total_spikes, current_batch_size
+
+        spk = (out > 0).float()
+        lif_total_spikes += spk.sum().item()  # Raw total spike count
+
+        if spk.dim() >= 3 and spk.size(0) == current_batch_size:
+            spk = spk.transpose(0, 1)
+
+        feature_dims = tuple(range(2, spk.dim()))
+        num_neurons = 1
+        for d in feature_dims:
+            num_neurons *= spk.size(d)
+
+        spikes_per_sample = spk.sum(dim=(0,) + feature_dims) / num_neurons
+
+        cnt = module_call_counter.get(module, 0) + 1
+        module_call_counter[module] = cnt
+        mod_name = module_to_name[module]
+        key = (mod_name, cnt)
+
+        idx = layer_index.get(key)
+        if idx is None:
+            idx = len(number_of_neurons)
+            layer_index[key] = idx
+            number_of_neurons.append(num_neurons)
+            spike_sum_over_samples.append(spikes_per_sample.sum().item())
+        else:
+            spike_sum_over_samples[idx] += spikes_per_sample.sum().item()
+
+    hooks = []
+    for m in model.modules():
+        if m.__class__.__name__ == "LIFSpike":
+            hooks.append(m.register_forward_hook(spike_hook))
+
     for batch_idx, (inputs, targets) in enumerate(test_loader):
         inputs = inputs.to(device)
+        targets = targets.to(device)
+        current_batch_size = inputs.size(0)
+        total_samples += current_batch_size
+        module_call_counter.clear()
+
         outputs = model(inputs)
         mean_out = outputs.mean(1)
 
         batch_spikes = (outputs > 0).sum().item()
-        total_spikes += batch_spikes
-        num_inferences += inputs.size(0)
+        proxy_total_spikes += batch_spikes
 
         _, predicted = mean_out.cpu().max(1)
         total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
+        correct += predicted.eq(targets.cpu()).sum().item()
 
-    return 100 * correct / total, total_spikes / num_inferences
+    for h in hooks:
+        h.remove()
+
+    acc = 100 * correct / total
+    proxy_avg_spikes = proxy_total_spikes / total_samples
+    number_of_spikes = [s / total_samples for s in spike_sum_over_samples]
+    network_avg_spikes = sum(number_of_spikes) / len(number_of_spikes)
+
+    return acc, proxy_avg_spikes, network_avg_spikes, lif_total_spikes, total_samples
 
 
 # ===================== MAIN ===================== #
@@ -325,7 +480,10 @@ if __name__ == '__main__':
 
         scheduler.step()
 
-        test_acc, avg_spikes = test(parallel_model, test_loader, device)
+        # test_acc, avg_spikes = test(parallel_model, test_loader, device)
+        test_acc, proxy_avg_spikes, network_avg_spikes, lif_total_spikes, total_samples = test(parallel_model, test_loader, device)
+
+
         # ===== Log thresholds per epoch =====
         for name, module in model.named_modules():
             if isinstance(module, LIFSpike):
@@ -371,20 +529,39 @@ if __name__ == '__main__':
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]['lr']
 
+        # logger.info(
+        #     f"Epoch:[{epoch}/{args.epochs}] "
+        #     f"LR={current_lr:.6f} "
+        #     f"TrainLoss={train_loss:.5f} TrainAcc={train_acc:.3f} "
+        #     f"TestAcc={test_acc:.3f} AvgSpikes={avg_spikes:.3f} "
+        #     f"GPU={peak_mem_gb:.2f}GB Time={epoch_time:.2f}s"
+        # )
+
         logger.info(
             f"Epoch:[{epoch}/{args.epochs}] "
             f"LR={current_lr:.6f} "
             f"TrainLoss={train_loss:.5f} TrainAcc={train_acc:.3f} "
-            f"TestAcc={test_acc:.3f} AvgSpikes={avg_spikes:.3f} "
+            f"TestAcc={test_acc:.3f} "
+            f"ReLU-Spikes={proxy_avg_spikes:.3f} "
+            f"NetworkAvgSpikes={network_avg_spikes:.3f} "
+            f"LIFTotalSpikesPerImg={lif_total_spikes / total_samples:.3f} "
             f"GPU={peak_mem_gb:.2f}GB Time={epoch_time:.2f}s"
         )
 
+
+
         writer.add_scalar("Accuracy/Train", train_acc, epoch)
         writer.add_scalar("Accuracy/Test", test_acc, epoch)
-        writer.add_scalar("Spikes/Avg_per_inf", avg_spikes, epoch)
+        #writer.add_scalar("Spikes/Avg_per_inf", avg_spikes, epoch)
         writer.add_scalar("GPU/PeakGB", peak_mem_gb, epoch)
         writer.add_scalar("Time/EpochSec", epoch_time, epoch)
         writer.add_scalar("LR", current_lr, epoch)
+
+        writer.add_scalar("Spikes/Proxy_Avg_per_inf", proxy_avg_spikes, epoch)
+        writer.add_scalar("Spikes/LIF_Avg_per_inf", network_avg_spikes, epoch)
+        writer.add_scalar("Spikes/LIF_Total_per_inf", lif_total_spikes / total_samples, epoch)
+
+
 
     # ------------------- FINE-TUNING ------------------- #
     logger.info("Starting fine-tuning…")
@@ -402,7 +579,9 @@ if __name__ == '__main__':
         train_loss, train_acc = train(parallel_model, device, train_loader, criterion, optimizer, epoch, args)
         best_train_acc = max(best_train_acc, train_acc)
 
-        test_acc, avg_spikes = test(parallel_model, test_loader, device)
+        #test_acc, avg_spikes = test(parallel_model, test_loader, device)
+        test_acc, proxy_avg_spikes, network_avg_spikes, lif_total_spikes, total_samples = test(parallel_model, test_loader, device)
+
         if test_acc > best_test_acc:
             best_test_acc = test_acc
             best_epoch = epoch + 1
